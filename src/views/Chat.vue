@@ -61,7 +61,7 @@
             <span class="switch-text">自动翻译</span>
           </label>
 
-          <select v-model="targetLang" class="lang-select" :disabled="!autoTranslate">
+          <select v-model="targetLang" class="lang-select">
             <option v-for="lang in languages" :key="lang.code" :value="lang.code">
               {{ lang.flag }} {{ lang.name }}
             </option>
@@ -108,7 +108,14 @@
 
               <div v-if="msg.translatedContent" class="translation-content">
                 <div class="divider"></div>
-                <span class="trans-icon">🌐</span> {{ msg.translatedContent }}
+                <div class="translation-line">
+                  <div>
+                    <span class="trans-icon">{{ getFlag(msg.translatedToLang) }}</span> {{ msg.translatedContent }}
+                  </div>
+                  <button class="clear-trans-btn" @click.stop="clearTranslation(msg)" title="清除翻译">
+                    ❌
+                  </button>
+                </div>
               </div>
               <div v-else-if="msg.isTranslating" class="translating-spinner">
                 翻译中...
@@ -127,16 +134,44 @@
       </div>
 
       <div class="chat-input-wrapper">
+        <transition name="slide-up">
+          <div v-if="aiSuggestion" class="ai-suggestion-box">
+            <div class="suggestion-text">
+              <strong>{{ aiSuggestionType === 'polish' ? 'AI 润色建议:' : 'AI 智能回复:' }}</strong>
+              {{ aiSuggestion }}
+            </div>
+            <div class="suggestion-actions">
+              <button @click="applySuggestion" class="apply-btn">采纳 (Enter)</button>
+              <button @click="cancelSuggestion" class="cancel-btn">取消 (Esc)</button>
+            </div>
+          </div>
+        </transition>
         <div class="ai-toolbar" v-if="selectedContactId">
-          <button @click="handleSmartReply" class="ai-tool-btn" :disabled="aiProcessing">
+          <button
+            class="ai-tool-btn"
+            @click="handleSmartReply"
+            :disabled="aiProcessing || !!aiSuggestion"
+            title="根据历史记录生成下一句回复"
+          >
             🤖 智能回复
           </button>
-          <button @click="handleAiPolish('business')" class="ai-tool-btn" :disabled="!message">
+          <button
+            class="ai-tool-btn"
+            @click="handleAiPolish('business')"
+            :disabled="!message.trim() || aiProcessing || !!aiSuggestion"
+            title="将输入文本调整为正式商务风格"
+          >
             ✨ 商务润色
           </button>
-          <button @click="handleAiPolish('casual')" class="ai-tool-btn" :disabled="!message">
+          <button
+            class="ai-tool-btn"
+            @click="handleAiPolish('casual')"
+            :disabled="!message.trim() || aiProcessing || !!aiSuggestion"
+            title="将输入文本调整为友好休闲风格"
+          >
             😎 语气软化
           </button>
+
           <div class="ai-loading" v-if="aiProcessing">AI 思考中...</div>
         </div>
 
@@ -144,7 +179,7 @@
           <input
             type="text"
             v-model="message"
-            @keyup.enter="sendMessage"
+            @keyup.enter="!aiSuggestion && sendMessage()"
             placeholder="输入消息..."
             class="message-input"
           />
@@ -177,6 +212,9 @@ export default {
       messages: [],
       languages: [],
       message: '',
+      aiSuggestion: '',
+      // 建议的类型：'polish','smartReply'
+      aiSuggestionType: '',
       ws: null,
       userId: null,
       username: null,
@@ -187,7 +225,7 @@ export default {
       unreadCounts: {},
       showAddContactModal: false,
 
-      // --- 新增状态 ---
+      // --- 状态 ---
       autoTranslate: false, // 是否开启自动翻译
       targetLang: 'zh',     // 默认目标语言
       aiProcessing: false,  // AI 是否正在处理
@@ -226,31 +264,75 @@ export default {
         })
         .catch(e => console.error("获取语言列表失败", e));
     },
+    handleGlobalKeyup(event) {
+      if (this.aiSuggestion) {
+        if (event.key === 'Enter') {
+          event.preventDefault(); // 阻止默认的 Enter 行为
+          this.applySuggestion();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          this.cancelSuggestion();
+        }
+      }
+    },
+    clearTranslation(msg) {
+      if (msg) {
+        msg.translatedContent = null;
+        msg.translatedToLang = null;
+        this.$forceUpdate();
+      }
+    },
+    // 采纳 AI 润色建议
+    applySuggestion() {
+      if (!this.aiSuggestion) return;
+      this.message = this.aiSuggestion;
+      this.aiSuggestion = '';
+      this.aiSuggestionType = '';
+      this.$nextTick(() => document.querySelector('.message-input')?.focus());
+    },
+
+    // 取消 AI 润色建议
+    cancelSuggestion() {
+      this.aiSuggestion = '';
+      this.aiSuggestionType = '';
+      this.$nextTick(() => document.querySelector('.message-input')?.focus());
+    },
     // 旗帜映射辅助函数
     getFlag(code) {
-      const map = {'zh': '🇨🇳', 'en': '🇺🇸', 'ja': '🇯🇵', 'ko': '🇰🇷', 'fr': '🇫🇷'};
-      return map[code] || '🌐';
+      return code || '🌐';
     },
 
     // 智能回复功能
     async handleSmartReply() {
       if (!this.selectedContactId) return;
-      this.aiProcessing = true;
+      // 前置检查
+      if (this.aiProcessing) {
+        this.showNotification('AI 正在处理上一个请求，请稍候', 'warning');
+        return;
+      }
+      if (this.aiSuggestion) {
+        this.showNotification('请先处理当前的 AI 建议 (Enter/Esc)', 'warning');
+        return;
+      }
       // 准备数据：取最近20条，格式化 userId -> 我/对方
-      const recentHistory = this.filteredMessages.slice(-20).map(msg => ({
-        userId: msg.senderId == this.userId ? '我' : '对方',
-        targetId: msg.targetId == this.userId ? '我' : '对方',
-        content: msg.content
-      }));
-
+      const chatsForSmartReply = this.filteredMessages
+        .slice(-20)
+        .map(m => ({ userId: m.senderId === this.userId ? '我' : '对方', content: m.content }));
+      if (chatsForSmartReply.length === 0) {
+        this.showNotification('没有足够的聊天记录来生成智能回复', 'warning');
+        return;
+      }
+      this.aiProcessing = true;
+      this.aiSuggestion = ''; // 使用通用建议
+      this.aiSuggestionType = '';
       try {
-        const response = await axios.post('/api/ai/smartReply', recentHistory); // 直接发数组，根据你描述的后端需求
-        if (response.data.code === CODES.SUCCESS || response.data.code === 200) {
-          // 2. 填充到输入框
-          this.message = response.data.data; // 假设返回 String
-          this.showNotification('AI 已生成回复建议');
+        const response = await axios.post('/api/ai/smartReply', chatsForSmartReply);
+        if (response.data.code === CODES.SUCCESS && response.data.data) {
+          this.aiSuggestion = response.data.data.trim();
+          this.aiSuggestionType = 'smartReply'; // 标记类型
+          this.showNotification('已生成智能回复，请按 Enter 采纳');
         } else {
-          this.showNotification(response.data.msg || '无法生成回复', 'error');
+          this.showNotification(response.data.msg || 'AI智能回复服务返回错误或结果为空', 'error');
         }
       } catch (e) {
         console.error(e);
@@ -327,7 +409,7 @@ export default {
     },
     async handleClearHistory() {
       if (!this.selectedContactId) return;
-      if (!confirm(`确定要清空与 ${this.currentContactName} 的所有聊天记录吗？此操作不可逆！`)) {
+      if (!confirm(`确定要清空与 ${this.currentContactName} 的所有聊天记录吗？`)) {
         return;
       }
       try {
@@ -392,21 +474,33 @@ export default {
     // AI 润色功能
     async handleAiPolish(style) {
       if (!this.message.trim()) return;
+      if (this.aiProcessing) {
+        this.showNotification('AI 正在处理上一个请求，请稍候', 'warning');
+        return;
+      }
+      if (this.aiSuggestion) {
+        this.showNotification('请先处理当前的 AI 建议 (Enter/Esc)', 'warning');
+        return;
+      }
       this.aiProcessing = true;
+      this.aiSuggestion = ''; // 使用通用建议
+      this.aiSuggestionType = '';
       try {
         const response = await axios.post('/api/ai/polish', {
           text: this.message,
           style: style
         });
-        if (response.data.code === CODES.SUCCESS) {
-          this.message = response.data.data;
-          this.showNotification(`已完成${style === 'business' ? '商务' : '语气'}润色`);
+        if (response.data.code === CODES.SUCCESS && response.data.data) {
+          this.aiSuggestion = response.data.data.trim(); // 使用通用建议
+          this.aiSuggestionType = 'polish'; // 标记类型
+          this.showNotification(`已完成${style === 'business' ? '商务' : '语气'}润色，请按 Enter 采纳`);
+        } else {
+          this.showNotification('AI润色服务返回错误或结果为空', 'error');
         }
       } catch (error) {
         this.showNotification('AI服务暂时繁忙', 'error');
       } finally {
         this.aiProcessing = false;
-        this.$nextTick(() => document.querySelector('.message-input')?.focus());
       }
     },
 
@@ -424,6 +518,7 @@ export default {
 
         if (response.data.code === CODES.SUCCESS) {
           msg.translatedContent = response.data.data.translated;
+          msg.translatedToLang = this.targetLang;
         } else {
           console.warn('翻译接口返回异常', response.data);
           this.showNotification('翻译失败', 'error');
@@ -432,11 +527,8 @@ export default {
         console.error("翻译失败", error);
         this.showNotification('翻译服务不可用', 'error');
       } finally {
-        // 【修复】直接赋值
         msg.isTranslating = false;
-        // 强制刷新一下视图（保险起见，虽然Vue3通常不需要）
-        // this.$forceUpdate();
-        // this.scrollToBottom();
+        this.$forceUpdate();
       }
     },
 
@@ -520,9 +612,9 @@ export default {
     }
     this.getContactList();
     this.getLanguages();
+    document.addEventListener('keyup', this.handleGlobalKeyup);
     if (this.userId) {
       this.ws = new WebSocket(`ws://localhost:8080/ws/${this.userId}`);
-
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -576,6 +668,7 @@ export default {
   },
   beforeUnmount() {
     if (this.ws) this.ws.close();
+    document.removeEventListener('keyup', this.handleGlobalKeyup);
   }
 };
 </script>
@@ -696,6 +789,26 @@ export default {
 .translation-content { margin-top: 8px; font-size: 14px; }
 .self-message .translation-content { color: #e6fffa; }
 .other-message .translation-content { color: #4a5568; }
+.translation-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.clear-trans-btn {
+  background: none;
+  border: none;
+  font-size: 10px;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+  margin-top: 2px;
+}
+.clear-trans-btn:hover {
+  color: #ff4d4f;
+}
 .divider { height: 1px; background-color: rgba(0,0,0,0.1); margin: 6px 0; }
 .self-message .divider { background-color: rgba(255,255,255,0.3); }
 .trans-icon { font-size: 12px; margin-right: 4px; }
@@ -717,4 +830,65 @@ export default {
 .current-user-item { display: flex; align-items: center; padding: 8px 12px; cursor: default; }
 .logout-btn { background: none; border: none; font-size: 12px; color: #666; cursor: pointer; padding: 4px 8px; border-radius: 4px; margin-left: 8px; }
 .logout-btn:hover { background-color: #f5f5f5; color: #ff4d4f; }
+
+.ai-suggestion-box {
+  padding: 10px 16px;
+  background-color: #fffbe6; /* 浅黄色背景，突出提示 */
+  border-top: 1px solid #fae6b0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  color: #664d03;
+}
+
+.suggestion-text {
+  flex: 1;
+  margin-right: 20px;
+  word-break: break-word;
+}
+
+.suggestion-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.apply-btn, .cancel-btn {
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.apply-btn {
+  background-color: #42b983;
+  color: white;
+  border: 1px solid #42b983;
+}
+
+.apply-btn:hover {
+  background-color: #36a47e;
+}
+
+.cancel-btn {
+  background-color: #ffffff;
+  color: #666;
+  border: 1px solid #ccc;
+}
+
+.cancel-btn:hover {
+  background-color: #f0f0f0;
+}
+
+/* 建议区域的动画 */
+.slide-up-enter-active, .slide-up-leave-active {
+  transition: all 0.2s ease-out;
+}
+.slide-up-enter, .slide-up-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
+}
 </style>
