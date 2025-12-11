@@ -183,10 +183,29 @@
         </div>
 
         <div class="chat-input-area">
+          <div class="emoji-container">
+            <button
+              class="emoji-toggle-btn"
+              @click.stop="showEmojiPicker = !showEmojiPicker"
+              title="选择表情"
+            >
+              😊
+            </button>
+
+            <transition name="slide-fade-fast">
+              <div v-if="showEmojiPicker" class="emoji-picker-wrapper">
+                <EmojiPicker
+                  :native="true"
+                  @select="insertEmoji"
+                  :theme="'light'"
+                />
+              </div>
+            </transition>
+          </div>
           <input
             type="text"
             v-model="message"
-            @keyup.enter="!aiSuggestion && sendMessage()"
+            ref="messageInput" @keyup.enter="!aiSuggestion && sendMessage()"
             placeholder="输入消息..."
             class="message-input"
           />
@@ -226,10 +245,12 @@
 import axios from "axios";
 import AddContactModal from '@/components/chat/AddContactModal.vue';
 import {CODES} from "@/constants/codes.js";
+import EmojiPicker from 'vue3-emoji-picker';
 
 export default {
   components: {
-    AddContactModal
+    AddContactModal,
+    EmojiPicker
   },
   data() {
     return {
@@ -254,6 +275,7 @@ export default {
       aiProcessing: false,  // AI 是否正在处理
       showSummaryModal: false, // 控制摘要模态框显示
       chatSummary: '',         // 存储摘要文本
+      showEmojiPicker: false,  // 控制 Emoji 面板显示
       notification: {
         show: false,
         message: '',
@@ -288,7 +310,32 @@ export default {
         })
         .catch(e => console.error("获取语言列表失败", e));
     },
-    // 【新增】复制摘要到剪贴板
+    // 插入 Emoji 到输入框
+    insertEmoji(emojiObject) {
+      // vue3-emoji-picker 默认返回 {i: '😀', n: 'grinning face', ...}
+      const emoji = emojiObject.i;
+      const input = this.$refs.messageInput;
+
+      if (input && emoji) {
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+
+        // 插入 Emoji 到光标位置
+        this.message = this.message.substring(0, start) + emoji + this.message.substring(end);
+
+        // 重新设置光标位置
+        this.$nextTick(() => {
+          input.focus();
+          // 将光标设置到新插入文本的末尾
+          input.setSelectionRange(start + emoji.length, start + emoji.length);
+        });
+
+        // 插入后保持面板开启，方便用户连续插入
+      } else if (emoji) {
+        this.message += emoji;
+      }
+    },
+    // 复制摘要到剪贴板
     copySummary() {
       if (this.chatSummary) {
         navigator.clipboard.writeText(this.chatSummary).then(() => {
@@ -1070,6 +1117,47 @@ export default {
   transition: opacity 0.3s ease;
 }
 .modal-fade-enter, .modal-fade-leave-to {
+  opacity: 0;
+}
+.emoji-container {
+  position: relative;
+  /* 使按钮在输入区居中对齐 */
+  align-self: center;
+  flex-shrink: 0;
+  margin-right: -5px; /* 调整与输入框的间距 */
+}
+
+.emoji-toggle-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 10px;
+  transition: transform 0.2s;
+  line-height: 1;
+  color: #606266;
+}
+
+.emoji-toggle-btn:hover {
+  transform: scale(1.1);
+  color: #42b983;
+}
+
+/* 专门用于容纳 EmojiPicker 组件的容器 */
+.emoji-picker-wrapper {
+  position: absolute;
+  bottom: 100%; /* 弹出在输入框上方 */
+  left: -10px; /* 稍微向左偏移，避免被遮挡 */
+  margin-bottom: 10px;
+  z-index: 20; /* 确保在最上层 */
+}
+
+/* --- 快速淡入淡出动画 --- */
+.slide-fade-fast-enter-active, .slide-fade-fast-leave-active {
+  transition: all 0.2s ease;
+}
+.slide-fade-fast-enter, .slide-fade-fast-leave-to {
+  transform: translateY(10px);
   opacity: 0;
 }
 </style>
