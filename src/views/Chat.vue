@@ -52,11 +52,18 @@
           <h2>{{ currentContactName || '选择一个联系人开始聊天' }}</h2>
           <button v-if="selectedContactId" @click="handleClearHistory" class="clear-history-btn" title="清空历史记录">🗑️</button>
           <button v-if="selectedContactId" @click="handleRecoverHistory" class="clear-history-btn" title="恢复历史记录">🔄️</button>
-
+          <button
+            class="summary-btn"
+            @click="handleSummarize"
+            :disabled="aiProcessing || !filteredMessages.length"
+            title="总结当前聊天记录"
+          >
+            📋 总结
+          </button>
         </div>
 
         <div class="translation-controls" v-if="selectedContactId">
-          <label class="switch-label">
+          <label class="switch-label" title="收到消息将自动翻译为指定语言">
             <input type="checkbox" v-model="autoTranslate">
             <span class="switch-text">自动翻译</span>
           </label>
@@ -186,6 +193,23 @@
           <button @click="sendMessage" class="send-button">发送</button>
         </div>
       </div>
+      <transition name="modal-fade">
+        <div v-if="showSummaryModal" class="chat-summary-modal-overlay">
+          <div class="chat-summary-modal">
+            <div class="modal-header">
+              <h3>聊天摘要</h3>
+              <button @click="showSummaryModal = false" class="close-btn">×</button>
+            </div>
+            <div class="modal-content">
+              <div v-if="chatSummary" class="summary-text">{{ chatSummary }}</div>
+              <div v-else>正在生成摘要...</div>
+            </div>
+            <div class="modal-footer">
+              <button @click="copySummary" class="copy-btn">复制摘要</button>
+            </div>
+          </div>
+        </div>
+      </transition>
     </div>
 
     <AddContactModal
@@ -213,7 +237,6 @@ export default {
       languages: [],
       message: '',
       aiSuggestion: '',
-      // 建议的类型：'polish','smartReply'
       aiSuggestionType: '',
       ws: null,
       userId: null,
@@ -229,7 +252,8 @@ export default {
       autoTranslate: false, // 是否开启自动翻译
       targetLang: 'zh',     // 默认目标语言
       aiProcessing: false,  // AI 是否正在处理
-
+      showSummaryModal: false, // 控制摘要模态框显示
+      chatSummary: '',         // 存储摘要文本
       notification: {
         show: false,
         message: '',
@@ -263,6 +287,52 @@ export default {
           }
         })
         .catch(e => console.error("获取语言列表失败", e));
+    },
+    // 【新增】复制摘要到剪贴板
+    copySummary() {
+      if (this.chatSummary) {
+        navigator.clipboard.writeText(this.chatSummary).then(() => {
+          this.showNotification('摘要已复制到剪贴板');
+        }).catch(err => {
+          this.showNotification('复制失败', 'error');
+          console.error('无法复制文本: ', err);
+        });
+      }
+    },
+
+    // 【新增】处理聊天摘要功能
+    async handleSummarize() {
+      if (!this.selectedContactId || this.aiProcessing) return;
+      if (!this.filteredMessages.length) {
+        this.showNotification('当前聊天记录为空，无法总结', 'warning');
+        return;
+      }
+
+      this.aiProcessing = true;
+      this.chatSummary = '';
+      this.showSummaryModal = true; // 立即打开模态框，显示加载状态
+
+      // 准备数据：格式化 userId -> 我/对方
+      const chatsForSummarize = this.filteredMessages
+        .map(m => ({ userId: m.senderId === this.userId ? '我' : '对方', content: m.content }));
+
+      try {
+        // 调用后端新的 summarize 接口
+        const response = await axios.post('/api/ai/summarize', chatsForSummarize);
+
+        if (response.data.code === CODES.SUCCESS && response.data.data) {
+          this.chatSummary = response.data.data.trim();
+        } else {
+          this.chatSummary = '摘要生成失败，请稍后再试。';
+          this.showNotification(response.data.msg || '摘要生成失败', 'error');
+        }
+      } catch (e) {
+        console.error(e);
+        this.chatSummary = '摘要服务连接失败。';
+        this.showNotification('AI 服务繁忙，请稍后再试', 'error');
+      } finally {
+        this.aiProcessing = false;
+      }
     },
     handleGlobalKeyup(event) {
       if (this.aiSuggestion) {
@@ -889,6 +959,117 @@ export default {
 }
 .slide-up-enter, .slide-up-leave-to {
   transform: translateY(100%);
+  opacity: 0;
+}
+/* --- 聊天摘要按钮样式 --- */
+.summary-btn {
+  background-color: #f5f5f5;
+  color: #606266;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: 10px; /* 与其他元素保持间距 */
+}
+.summary-btn:hover:not(:disabled) {
+  background-color: #ebebeb;
+}
+.summary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+/* --- 摘要模态框样式 --- */
+.chat-summary-modal-overlay {
+  position: absolute; /* 相对于 chat-container */
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000; /* 确保在最上层 */
+}
+
+.chat-summary-modal {
+  background-color: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 800px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+
+.modal-header {
+  padding: 15px 20px;
+  border-bottom: 1px solid #ebeef5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #909399;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-content {
+  padding: 20px;
+  flex-grow: 1;
+  overflow-y: auto;
+  white-space: pre-wrap; /* 保留LLM输出的分段和换行 */
+  font-size: 15px;
+  line-height: 1.6;
+  color: #303133;
+}
+
+.summary-text {
+  /* 确保总结文本样式良好 */
+}
+
+.modal-footer {
+  padding: 15px 20px;
+  border-top: 1px solid #ebeef5;
+  text-align: right;
+}
+
+.copy-btn {
+  background-color: #42b983;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 15px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.copy-btn:hover {
+  background-color: #36a47e;
+}
+
+/* 模态框动画 */
+.modal-fade-enter-active, .modal-fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+.modal-fade-enter, .modal-fade-leave-to {
   opacity: 0;
 }
 </style>
