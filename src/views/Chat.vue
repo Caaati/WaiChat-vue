@@ -971,7 +971,8 @@ export default {
     this.getLanguages()
     document.addEventListener('keyup', this.handleGlobalKeyup)
     if (this.userId) {
-      this.ws = new WebSocket(`ws://localhost:8080/ws/${this.userId}`)
+      // this.ws = new WebSocket(`ws://localhost:8080/ws/${this.userId}`)
+      this.ws = new WebSocket(`/ws/${this.userId}`)
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
