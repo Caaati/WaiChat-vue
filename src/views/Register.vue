@@ -50,7 +50,7 @@ export default {
         });
         if (res.data.code === CODES.SUCCESS) {
           alert('注册成功！请登录');
-          this.$router.push('/login');
+          this.$router.push('/login')
         } else {
           alert('注册失败：' + res.data.msg);
         }
@@ -65,22 +65,36 @@ export default {
 
 <style scoped>
 .register-container {
+  /* 核心：强制占满屏幕，禁止滚动 */
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100vh;
   background-color: #f5f5f5;
-  padding: 0 1rem;
+
+  /* 固定定位确保稳固 */
+  position: fixed;
+  top: 0;
+  left: 0;
 }
 
 .register-box {
   background: white;
   padding: 2rem;
   border-radius: 8px;
-  box-shadow: 0 0 10px rgba(0,0,0,0.1);
-  /* 修改宽度为响应式 */
-  width: 100%;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+
+  /* 响应式宽度适配 */
+  width: 90%;
   max-width: 360px;
+  box-sizing: border-box;
+
+  /* 如果手机横屏高度不足，允许盒子内部轻微滚动，但不影响整体页面 */
+  max-height: 90vh;
+  overflow-y: auto;
 }
 
 .form-group {
@@ -90,40 +104,51 @@ export default {
 label {
   display: block;
   margin-bottom: 0.3rem;
+  color: #333;
+  font-weight: 500;
 }
 
 input {
   width: 100%;
-  padding: 0.5rem;
+  padding: 10px;
   border: 1px solid #ddd;
   border-radius: 4px;
   box-sizing: border-box;
+  font-size: 16px;
+  outline: none;
+}
+
+input:focus {
+  border-color: #42b983;
 }
 
 .register-btn {
   width: 100%;
-  padding: 0.7rem;
+  padding: 10px;
   margin-top: 1rem;
   background: #42b983;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 16px;
+  font-weight: 500;
 }
 
-.register-btn:hover {
-  background: #36a47e;
+.register-btn:active {
+  background-color: #36a47e;
 }
 
 .login-link {
   margin-top: 1rem;
   text-align: center;
-  font-size: 0.9rem;
+  font-size: 14px;
+  color: #666;
 }
 
 .login-link a {
   color: #2196f3;
   text-decoration: none;
+  font-weight: 500;
 }
 </style>
