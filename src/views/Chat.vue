@@ -377,7 +377,47 @@ export default {
   },
 
   methods: {
-    // --- 新增：响应式与侧边栏控制 ---
+    async handleStrangerMessage(senderId, content) {
+      try {
+        // 复用 AddContactModal 中的接口逻辑
+        const response = await axios.get('/api/user/search', {
+          params: { key: String(senderId) } // 确保转为字符串
+        })
+
+        if (response.data.code === CODES.SUCCESS) {
+          const users = response.data.data
+          // 精确匹配 ID (防止搜索结果返回多个相似 ID 的情况)
+          const user = users.find(u => u.id == senderId)
+
+          if (user) {
+            // 1. 构造新的联系人对象
+            const newContact = {
+              id: user.id,
+              username: user.username,
+              nickname: user.nickname,
+              lastMessage: content,
+              // 如果有头像字段也可以加在这里
+            }
+
+            // 2. 添加到左侧列表顶部
+            this.contacts.unshift(newContact)
+
+            // 3. 【视觉优化】更新刚才收到的那条显示为 "未知用户" 或 "ID" 的消息的名字
+            // 遍历当前消息列表，把该用户发的消息名字修正过来
+            this.messages.forEach(msg => {
+              if (msg.senderId == senderId) {
+                msg.senderName = user.nickname
+              }
+            })
+
+            // 4. 如果不需要强制更新视图，Vue 的响应式通常会自动处理
+            // 但如果消息列表没有变化，可以尝试 this.$forceUpdate() (一般不需要)
+          }
+        }
+      } catch (error) {
+        console.error('获取陌生人信息失败', error)
+      }
+    },
     checkScreenSize() {
       this.isMobile = window.innerWidth <= 768
       // 如果切换到桌面端，默认展开侧边栏；如果切换到移动端，根据是否有选人决定
@@ -935,11 +975,9 @@ export default {
       this.$router.push('/login')
       return
     }
-
     // 初始化检测屏幕大小
     this.checkScreenSize()
     window.addEventListener('resize', this.checkScreenSize)
-
     this.getContactList()
     this.getLanguages()
     document.addEventListener('keyup', this.handleGlobalKeyup)
@@ -949,30 +987,43 @@ export default {
         try {
           const data = JSON.parse(event.data)
           const senderId = data.userId || data.senderId
+          // 查找现有联系人
+          let contactIndex = this.contacts.findIndex((c) => c.id == senderId)
+          let senderName = '未知用户'
+          if (contactIndex !== -1) {
+            // --- 情况 A: 是熟人 ---
+            senderName = this.contacts[contactIndex].nickname
+            // 更新左侧列表预览
+            this.contacts[contactIndex].lastMessage = data.content
+            // 移到顶部
+            const existingContact = this.contacts.splice(contactIndex, 1)[0]
+            this.contacts.unshift(existingContact)
+
+          } else if (senderId != this.userId) {
+            // --- 情况 B: 是陌生人 ---
+            senderName = `新朋友` // 暂时显示 ID，等待接口返回昵称
+            this.handleStrangerMessage(senderId, data.content)
+          }
+          // 构建消息对象
           const message = {
             id: data.id || Date.now() + Math.random(),
             senderId: senderId,
             targetId: data.targetId,
             content: data.content,
-            senderName: this.contacts.find((c) => c.id === senderId)?.nickname || '未知用户',
+            senderName: senderName,
             timestamp: data.createTime || new Date(),
             translatedContent: null,
             isTranslating: false,
           }
           if (this.selectedContactId != senderId) {
             this.unreadCounts[senderId] = (this.unreadCounts[senderId] || 0) + 1
-            this.showNotification(`收到来自 "${message.senderName}" 的新消息`)
+            this.showNotification(`收到来自 "${senderName}" 的新消息`)
           } else {
             this.messages.push(message)
             if (this.autoTranslate) {
               this.translateSingleMessage(message)
             }
             this.scrollToBottom()
-          }
-          const contactIndex = this.contacts.findIndex((c) => c.id == senderId)
-          if (contactIndex !== -1) {
-            this.contacts[contactIndex].lastMessage = message.content
-            this.contacts.unshift(this.contacts.splice(contactIndex, 1)[0])
           }
         } catch (e) {
           console.warn('WS error', e)
