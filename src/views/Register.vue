@@ -23,6 +23,7 @@
 </template>
 
 <script>
+// ... (Script 保持不变)
 import axios from 'axios';
 import { useRouter } from 'vue-router';
 import {CODES} from "@/constants/codes.js";
@@ -69,6 +70,7 @@ export default {
   align-items: center;
   height: 100vh;
   background-color: #f5f5f5;
+  padding: 0 1rem;
 }
 
 .register-box {
@@ -76,7 +78,9 @@ export default {
   padding: 2rem;
   border-radius: 8px;
   box-shadow: 0 0 10px rgba(0,0,0,0.1);
-  width: 300px;
+  /* 修改宽度为响应式 */
+  width: 100%;
+  max-width: 360px;
 }
 
 .form-group {
@@ -93,6 +97,7 @@ input {
   padding: 0.5rem;
   border: 1px solid #ddd;
   border-radius: 4px;
+  box-sizing: border-box;
 }
 
 .register-btn {

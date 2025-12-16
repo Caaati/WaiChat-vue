@@ -19,6 +19,7 @@
 </template>
 
 <script>
+// ... (Script 保持不变)
 import axios from 'axios';
 import { useRouter } from 'vue-router';
 import {CODES} from "@/constants/codes.js";
@@ -40,8 +41,6 @@ export default {
         const res = await axios.post('/api/login', formData);
 
         if (res.data.code === CODES.SUCCESS) {
-          // 假设后端返回的数据结构是 { code: 1, msg: "success", data: { id: 1, username: "admin" } }
-          // 请根据你实际的返回结构进行调整
           if (res.data.data && res.data.data.id) {
             localStorage.setItem('userId', res.data.data.id);
             localStorage.setItem('username', res.data.data.username);
@@ -70,6 +69,7 @@ export default {
   align-items: center;
   height: 100vh;
   background-color: #f5f5f5;
+  padding: 0 1rem; /* 防止在极小屏幕紧贴边缘 */
 }
 
 .login-box {
@@ -77,6 +77,9 @@ export default {
   padding: 2rem;
   border-radius: 8px;
   box-shadow: 0 0 10px rgba(0,0,0,0.1);
+  /* 修改宽度为响应式 */
+  width: 100%;
+  max-width: 400px;
 }
 
 .form-group {
@@ -87,6 +90,7 @@ input {
   width: 100%;
   padding: 0.5rem;
   margin-top: 0.3rem;
+  box-sizing: border-box; /* 确保padding不撑大宽度 */
 }
 
 .login-btn, .register-btn {
