@@ -733,9 +733,22 @@ export default {
         this.showNotification('请先处理当前的 AI 建议 (Enter/Esc)', 'warning')
         return
       }
-      const chatsForSmartReply = this.filteredMessages
+      const originalChats = this.filteredMessages
         .slice(-20)
-        .map((m) => ({ userId: m.senderId === this.userId ? '我' : '对方', content: m.content }))
+        .map((m) => ({
+          userId: m.senderId === this.userId ? '我' : '对方',
+          content: m.content
+        }));
+
+      // 在数组最后（末尾）添加仅包含双方ID的对象
+      const chatsForSmartReply = [
+        ...originalChats, // 保留原有所有处理后的消息
+        { // 末尾追加ID对象
+          userId: this.userId,
+          targetId: this.selectedContactId
+        }
+      ];
+
       if (chatsForSmartReply.length === 0) {
         this.showNotification('没有足够的聊天记录来生成智能回复', 'warning')
         return
