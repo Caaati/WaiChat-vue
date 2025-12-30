@@ -48,7 +48,8 @@
       <div class="chat-header">
         <div class="header-left">
           <button class="toggle-sidebar-btn" @click="toggleSidebar" title="切换侧边栏/返回列表">
-            <span v-if="isMobile">⬅️</span> <span v-else>{{ sidebarVisible ? '◀' : '▶' }}</span> </button>
+            <span v-if="isMobile">⬅️</span> <span v-else>{{ sidebarVisible ? '◀' : '▶' }}</span>
+          </button>
 
           <div class="contact-avatar" v-if="currentContactName">
             <span>{{ currentContactName.charAt(0) }}</span>
@@ -113,7 +114,9 @@
               <div class="contact-name" v-if="!isMobileSimple">
                 <span class="nickname">{{ nickname || '未登录' }}</span>
               </div>
-              <button class="logout-btn" @click="handleLogout">{{ isMobileSimple ? '退出' : '退出登录' }}</button>
+              <button class="logout-btn" @click="handleLogout">
+                {{ isMobileSimple ? '退出' : '退出登录' }}
+              </button>
             </div>
           </div>
         </div>
@@ -143,7 +146,29 @@
                 </div>
               </div>
 
-              <div class="message-content">{{ msg.content }}</div>
+              <div
+                v-if="msg.type === 'VOICE'"
+                class="voice-content"
+                @click="playVoice(msg.audioUrl)"
+              >
+                <span class="voice-icon">
+                  {{ isPlaying === msg.audioUrl ? '🔊...' : '🔊' }}
+                </span>
+                <span class="voice-duration">{{ msg.duration || 0 }}"</span>
+              </div>
+              <div class="message-content">
+                <template v-if="msg.type === 'TEXT' || !msg.type">
+                  {{ msg.content }}
+                </template>
+
+                <template v-else-if="msg.type === 'VOICE'">
+                  <div class="voice-player" @click="playAudio(msg.audioUrl)">
+                    <span class="voice-icon"> <i class="wifi-icon"></i> 🎤 </span>
+                    <span class="voice-duration">{{ msg.duration }}"</span>
+                    <audio :src="msg.audioUrl" ref="audioPlayer"></audio>
+                  </div>
+                </template>
+              </div>
 
               <div v-if="msg.translatedContent" class="translation-content">
                 <div class="divider"></div>
@@ -189,6 +214,14 @@
           </div>
         </transition>
         <div class="ai-toolbar">
+          <button
+            class="mic-trigger-btn"
+            @touchstart.prevent="handleTouchStart"
+            @touchmove.prevent="handleTouchMove"
+            @touchend.prevent="handleTouchEnd"
+          >
+            🎤
+          </button>
           <button
             class="ai-tool-btn"
             @click="handleSmartReply"
@@ -292,7 +325,20 @@
         </div>
       </transition>
     </div>
-
+    <transition name="fade">
+      <div v-if="isRecording" class="recording-overlay">
+        <div class="recording-card">
+          <div v-if="recordStatus === 'cancel'" class="status-icon cancel">🗑️</div>
+          <div v-else-if="recordStatus === 'transcribe'" class="status-icon transcribe">📝</div>
+          <div v-else class="status-icon pulse">🎤</div>
+          <p :class="['status-hint', { warning: recordStatus !== 'normal' }]">{{ statusHint }}</p>
+        </div>
+        <div class="record-zones">
+          <div class="zone left" :class="{ active: recordStatus === 'cancel' }">取消发送</div>
+          <div class="zone right" :class="{ active: recordStatus === 'transcribe' }">转文字</div>
+        </div>
+      </div>
+    </transition>
     <AddContactModal
       :is-visible="showAddContactModal"
       :current-user-id="userId"
@@ -317,6 +363,15 @@ export default {
   },
   data() {
     return {
+      isRecording: false,
+      recordStatus: 'normal', // normal, cancel, transcribe
+      startX: 0,
+      startY: 0,
+      mediaRecorder: null,
+      audioChunks: [],
+      recordStartTime: 0,
+      isPlaying: null, // 当前播放的音频地址
+
       messages: [],
       languages: [],
       message: '',
@@ -360,6 +415,11 @@ export default {
     }
   },
   computed: {
+    statusHint() {
+      if (this.recordStatus === 'cancel') return '松开手指，取消发送'
+      if (this.recordStatus === 'transcribe') return '松开手指，转文字'
+      return '手指上划，取消或转文字'
+    },
     filteredMessages() {
       if (!this.selectedContactId || !this.userId) return []
       return this.messages
@@ -372,22 +432,30 @@ export default {
     },
     // 极简模式（屏幕非常窄时）
     isMobileSimple() {
-      return this.isMobile && window.innerWidth < 400;
-    }
+      return this.isMobile && window.innerWidth < 400
+    },
   },
 
   methods: {
+    playAudio(url) {
+      if (!url) return;
+      const audio = new Audio(url);
+      audio.play().catch(err => {
+        console.error("播放失败:", err);
+        this.$message.error("播放失败，请检查文件链接是否有效");
+      });
+    },
     async handleStrangerMessage(senderId, content) {
       try {
         // 复用 AddContactModal 中的接口逻辑
         const response = await axios.get('/api/user/search', {
-          params: { key: String(senderId) } // 确保转为字符串
+          params: { key: String(senderId) }, // 确保转为字符串
         })
 
         if (response.data.code === CODES.SUCCESS) {
           const users = response.data.data
           // 精确匹配 ID (防止搜索结果返回多个相似 ID 的情况)
-          const user = users.find(u => u.id == senderId)
+          const user = users.find((u) => u.id == senderId)
 
           if (user) {
             // 1. 构造新的联系人对象
@@ -404,7 +472,7 @@ export default {
 
             // 3. 【视觉优化】更新刚才收到的那条显示为 "未知用户" 或 "ID" 的消息的名字
             // 遍历当前消息列表，把该用户发的消息名字修正过来
-            this.messages.forEach(msg => {
+            this.messages.forEach((msg) => {
               if (msg.senderId == senderId) {
                 msg.senderName = user.nickname
               }
@@ -459,16 +527,21 @@ export default {
           if (res.data.code === CODES.SUCCESS) {
             const historyData = Array.isArray(res.data.data) ? res.data.data : []
             this.messages = historyData.map((msg) => {
-              const isSelf = msg.userId == this.userId
+              const isSelf = msg.userId == this.userId;
               return {
-                id: msg.id || Date.now() + Math.random(),
+                id: msg.id,
                 senderId: isSelf ? this.userId : msg.userId,
                 targetId: isSelf ? contact.id : msg.targetId,
                 content: msg.content,
+                // --- 核心修复：添加以下三个字段 ---
+                type: msg.type,
+                audioUrl: msg.audioUrl,
+                duration: msg.duration,
+                // ------------------------------
                 senderName: isSelf ? '我' : contact.nickname,
-                timestamp: msg.timestamp || msg.createTime || new Date(),
+                timestamp: msg.createTime, // 后端返回的是 createTime
                 translatedContent: null,
-              }
+              };
             })
             this.scrollToBottom()
           }
@@ -733,21 +806,20 @@ export default {
         this.showNotification('请先处理当前的 AI 建议 (Enter/Esc)', 'warning')
         return
       }
-      const originalChats = this.filteredMessages
-        .slice(-20)
-        .map((m) => ({
-          userId: m.senderId === this.userId ? '我' : '对方',
-          content: m.content
-        }));
+      const originalChats = this.filteredMessages.slice(-20).map((m) => ({
+        userId: m.senderId === this.userId ? '我' : '对方',
+        content: m.content,
+      }))
 
       // 在数组最后（末尾）添加仅包含双方ID的对象
       const chatsForSmartReply = [
         ...originalChats, // 保留原有所有处理后的消息
-        { // 末尾追加ID对象
+        {
+          // 末尾追加ID对象
           userId: this.userId,
-          targetId: this.selectedContactId
-        }
-      ];
+          targetId: this.selectedContactId,
+        },
+      ]
 
       if (chatsForSmartReply.length === 0) {
         this.showNotification('没有足够的聊天记录来生成智能回复', 'warning')
@@ -962,6 +1034,110 @@ export default {
         this.showNotification('发送失败', 'error')
       }
     },
+    // --- 录音手势处理 ---
+    async handleTouchStart(e) {
+      const touch = e.touches[0]
+      this.startX = touch.clientX
+      this.startY = touch.clientY
+      this.recordStatus = 'normal'
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        this.mediaRecorder = new MediaRecorder(stream)
+        this.audioChunks = []
+        this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data)
+        this.mediaRecorder.start()
+        this.isRecording = true
+        this.recordStartTime = Date.now()
+        if (navigator.vibrate) navigator.vibrate(20)
+      } catch (err) {
+        this.showNotification('无法访问麦克风', 'error')
+      }
+    },
+    handleTouchMove(e) {
+      if (!this.isRecording) return
+      const touch = e.touches[0]
+      const offsetX = touch.clientX - this.startX
+      const offsetY = touch.clientY - this.startY
+
+      if (offsetY < -80) {
+        // 向上滑动超过 80px
+        if (offsetX < -40) this.recordStatus = 'cancel'
+        else if (offsetX > 40) this.recordStatus = 'transcribe'
+        else this.recordStatus = 'normal'
+      } else {
+        this.recordStatus = 'normal'
+      }
+    },
+    async handleTouchEnd() {
+      if (!this.isRecording) return
+      this.isRecording = false
+      this.mediaRecorder.stop()
+      const duration = Math.round((Date.now() - this.recordStartTime) / 1000)
+
+      this.mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' })
+        if (this.recordStatus === 'cancel') {
+          this.showNotification('已取消')
+        } else if (this.recordStatus === 'transcribe') {
+          this.processAudioSTT(audioBlob)
+        } else {
+          if (duration < 1) {
+            this.showNotification('说话时间太短', 'warning')
+            return
+          }
+          this.uploadAndSendVoice(audioBlob, duration)
+        }
+      }
+    },
+    // --- 语音上传与发送 ---
+    async uploadAndSendVoice(blob, duration) {
+      const formData = new FormData()
+      formData.append('file', blob, 'voice.webm')
+      try {
+        const res = await axios.post('/api/upload', formData) // 需后端配合
+        const audioUrl = res.data.data
+        const voiceMsg = {
+          userId: this.userId,
+          targetId: this.selectedContactId,
+          content: '[语音消息]',
+          type: 'VOICE',
+          audioUrl: audioUrl,
+          duration: duration,
+        }
+        console.log('准备通过 WebSocket 发送数据:', voiceMsg)
+        this.ws.send(JSON.stringify(voiceMsg))
+        this.messages.push(voiceMsg)
+        this.scrollToBottom()
+      } catch (e) {
+        this.showNotification('语音发送失败', 'error')
+      }
+    },
+    async processAudioSTT(blob) {
+      const formData = new FormData()
+      formData.append('file', blob, 'stt.wav')
+      this.aiProcessing = true
+      try {
+        const res = await axios.post('/api/ai/audio/stt', formData)
+        if (res.data.code === CODES.SUCCESS) {
+          this.message = res.data.data
+          this.showNotification('已转写为文字')
+        }
+      } catch (e) {
+        this.showNotification('识别失败', 'error')
+      } finally {
+        this.aiProcessing = false
+      }
+    },
+    playVoice(url) {
+      if (this.isPlaying === url) return
+      const audio = new Audio(url)
+      this.isPlaying = url
+      audio.play()
+      audio.onended = () => {
+        this.isPlaying = null
+      }
+    },
     showNotification(message, type = 'info') {
       this.notification.message = message
       this.notification.type = type
@@ -1011,7 +1187,6 @@ export default {
             // 移到顶部
             const existingContact = this.contacts.splice(contactIndex, 1)[0]
             this.contacts.unshift(existingContact)
-
           } else if (senderId != this.userId) {
             // --- 情况 B: 是陌生人 ---
             senderName = `新朋友` // 暂时显示 ID，等待接口返回昵称
@@ -1023,6 +1198,9 @@ export default {
             senderId: senderId,
             targetId: data.targetId,
             content: data.content,
+            type: data.type || 'TEXT', // 接收来自后端的 type 字段
+            audioUrl: data.audioUrl, // 接收语音地址
+            duration: data.duration, // 接收时长
             senderName: senderName,
             timestamp: data.createTime || new Date(),
             translatedContent: null,
@@ -1280,7 +1458,8 @@ export default {
     display: none;
   }
 
-  .summary-btn, .analysis-btn {
+  .summary-btn,
+  .analysis-btn {
     padding: 6px; /* 减小padding */
     margin-left: 4px;
   }
@@ -1339,81 +1518,620 @@ export default {
   margin-right: 12px;
   flex-shrink: 0;
 }
-.add-chat-text { font-size: 15px; }
-.sidebar-header { padding: 16px; border-bottom: 1px solid #e9e9eb; }
-.sidebar-header h3 { margin: 0; font-size: 18px; color: #333; }
-.contacts-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; }
-.contacts-list li { padding: 12px 16px; display: flex; align-items: center; cursor: pointer; border-bottom: 1px solid #f0f0f0; gap: 12px; }
-.contacts-list li:hover { background-color: #f5f5f5; }
-.contacts-list li.active { background-color: #e8f0fe; border-left: 3px solid #42b983; }
-.contact-avatar { width: 40px; height: 40px; border-radius: 50%; background-color: #42b983; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
-.contact-info { display: flex; flex-direction: column; justify-content: center; flex: 1; min-width: 0; }
-.unread-badge { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; background-color: #ff4d4f; color: white; font-size: 12px; border-radius: 50%; margin-left: auto; }
-.contact-name { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.nickname { font-size: 15px; font-weight: 600; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.username { font-size: 12px; color: #999; }
-.last-message { font-size: 12px; color: #666; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.switch-label { display: flex; align-items: center; cursor: pointer; font-size: 13px; color: #555; gap: 6px; }
-.lang-select { border: 1px solid #ddd; border-radius: 4px; padding: 2px 6px; font-size: 12px; outline: none; background: white; }
-.empty-chat-hint { text-align: center; color: #999; padding-top: 30%; font-size: 14px; }
-.message-list { display: flex; flex-direction: column; gap: 12px; }
-.message-item { display: flex; max-width: 80%; }
-.self-message { align-self: flex-end; }
-.other-message { align-self: flex-start; }
-.message-bubble { padding: 10px 14px; border-radius: 18px; position: relative; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1); max-width: 100%; word-break: break-word; }
-.self-message .message-bubble { background-color: #42b983; color: white; border-top-right-radius: 4px; }
-.other-message .message-bubble { background-color: #ffffff; color: #333; border: 1px solid #e0e0e0; border-top-left-radius: 4px; }
-.message-sender-container { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-.message-sender { font-size: 12px; opacity: 0.8; font-weight: 500; }
-.message-time { font-size: 11px; margin-left: 8px; opacity: 0.7; color: #999; }
-.self-message .message-time { color: white; }
-.translation-content { margin-top: 8px; font-size: 14px; }
-.self-message .translation-content { color: #e6fffa; }
-.other-message .translation-content { color: #4a5568; }
-.translation-line { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-.clear-trans-btn { background: none; border: none; font-size: 10px; color: #999; cursor: pointer; padding: 0; flex-shrink: 0; line-height: 1; margin-top: 2px; }
-.divider { height: 1px; background-color: rgba(0, 0, 0, 0.1); margin: 6px 0; }
-.self-message .divider { background-color: rgba(255, 255, 255, 0.3); }
-.trans-icon { font-size: 12px; margin-right: 4px; }
-.translating-spinner { font-size: 12px; margin-top: 4px; opacity: 0.7; font-style: italic; }
-.manual-trans-btn { display: block; margin-top: 4px; font-size: 11px; color: #42b983; background: none; border: 1px solid #42b983; border-radius: 10px; padding: 1px 6px; cursor: pointer; }
-.ai-loading { font-size: 12px; color: #999; font-style: italic; margin-left: auto; }
-.current-user-item { display: flex; align-items: center; padding: 8px 12px; cursor: default; }
-.logout-btn { background: none; border: none; font-size: 12px; color: #666; cursor: pointer; padding: 4px 8px; border-radius: 4px; margin-left: 8px; }
-.ai-suggestion-box { padding: 10px 16px; background-color: #fffbe6; border-top: 1px solid #fae6b0; display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: #664d03; }
-.suggestion-text { flex: 1; margin-right: 20px; word-break: break-word; }
-.suggestion-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.apply-btn, .cancel-btn { padding: 6px 12px; border-radius: 16px; font-size: 12px; cursor: pointer; font-weight: 500; transition: all 0.2s; }
-.apply-btn { background-color: #42b983; color: white; border: 1px solid #42b983; }
-.cancel-btn { background-color: #ffffff; color: #666; border: 1px solid #ccc; }
-.summary-btn, .analysis-btn { background-color: #f5f5f5; color: #606266; border: 1px solid #dcdfe6; border-radius: 4px; padding: 6px 12px; font-size: 14px; cursor: pointer; transition: all 0.2s; margin-left: 10px; }
-.chat-summary-modal-overlay, .analysis-modal-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
-.chat-summary-modal, .analysis-modal { background-color: white; border-radius: 8px; width: 90%; max-width: 800px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); overflow: hidden; display: flex; flex-direction: column; max-height: 80vh; }
-.modal-header { padding: 15px 20px; border-bottom: 1px solid #ebeef5; display: flex; justify-content: space-between; align-items: center; }
-.close-btn { background: none; border: none; font-size: 24px; color: #909399; cursor: pointer; line-height: 1; }
-.modal-content { padding: 20px; flex-grow: 1; overflow-y: auto; white-space: pre-wrap; font-size: 15px; line-height: 1.6; color: #303133; }
-.modal-footer { padding: 15px 20px; border-top: 1px solid #ebeef5; text-align: right; }
-.copy-btn { background-color: #42b983; color: white; border: none; border-radius: 4px; padding: 8px 15px; cursor: pointer; }
-.emoji-container { position: relative; align-self: center; flex-shrink: 0; margin-right: -5px; }
-.emoji-toggle-btn { background: none; border: none; font-size: 24px; cursor: pointer; padding: 0 10px; line-height: 1; color: #606266; }
-.emoji-picker-wrapper { position: absolute; bottom: 100%; left: -10px; margin-bottom: 10px; z-index: 20; }
-.chat-notification { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); z-index: 1000; background-color: #ffffff; padding: 10px 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); display: flex; align-items: center; gap: 8px; min-width: 200px; justify-content: center; border: 1px solid #eee; }
-.chat-notification.error { border-left: 4px solid #ff4d4f; color: #d32f2f; }
-.chat-notification.info { border-left: 4px solid #42b983; color: #333; }
-.slide-fade-enter-active, .slide-fade-leave-active, .slide-up-enter-active, .slide-up-leave-active, .modal-fade-enter-active, .modal-fade-leave-active, .slide-fade-fast-enter-active, .slide-fade-fast-leave-active { transition: all 0.3s ease; }
-.slide-fade-enter, .slide-fade-leave-to { transform: translate(-50%, -20px); opacity: 0; }
-.slide-up-enter, .slide-up-leave-to { transform: translateY(100%); opacity: 0; }
-.modal-fade-enter, .modal-fade-leave-to, .slide-fade-fast-enter, .slide-fade-fast-leave-to { opacity: 0; }
-.analysis-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; }
-.loading-spinner { width: 40px; height: 40px; border: 4px solid #e1e1e1; border-top: 4px solid #1890ff; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
-@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-.dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr; gap: 20px; }
-.dashboard-card { background: white; border-radius: 10px; padding: 15px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); height: 300px; display: flex; flex-direction: column; }
-.summary-card { grid-column: 1 / -1; height: auto; min-height: 100px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-.card-title { font-size: 16px; font-weight: bold; margin-bottom: 10px; opacity: 0.9; }
-.ai-comment { font-size: 16px; line-height: 1.6; font-weight: 500; }
-.chart-container { width: 100%; height: 100%; }
+.add-chat-text {
+  font-size: 15px;
+}
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid #e9e9eb;
+}
+.sidebar-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+.contacts-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.contacts-list li {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+  gap: 12px;
+}
+.contacts-list li:hover {
+  background-color: #f5f5f5;
+}
+.contacts-list li.active {
+  background-color: #e8f0fe;
+  border-left: 3px solid #42b983;
+}
+.contact-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: #42b983;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+.contact-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+}
+.unread-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background-color: #ff4d4f;
+  color: white;
+  font-size: 12px;
+  border-radius: 50%;
+  margin-left: auto;
+}
+.contact-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.nickname {
+  font-size: 15px;
+  font-weight: 600;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.username {
+  font-size: 12px;
+  color: #999;
+}
+.last-message {
+  font-size: 12px;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.switch-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: #555;
+  gap: 6px;
+}
+.lang-select {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  outline: none;
+  background: white;
+}
+.empty-chat-hint {
+  text-align: center;
+  color: #999;
+  padding-top: 30%;
+  font-size: 14px;
+}
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.message-item {
+  display: flex;
+  max-width: 80%;
+}
+.self-message {
+  align-self: flex-end;
+}
+.other-message {
+  align-self: flex-start;
+}
+.message-bubble {
+  padding: 10px 14px;
+  border-radius: 18px;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  max-width: 100%;
+  word-break: break-word;
+}
+.self-message .message-bubble {
+  background-color: #42b983;
+  color: white;
+  border-top-right-radius: 4px;
+}
+.other-message .message-bubble {
+  background-color: #ffffff;
+  color: #333;
+  border: 1px solid #e0e0e0;
+  border-top-left-radius: 4px;
+}
+.message-sender-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.message-sender {
+  font-size: 12px;
+  opacity: 0.8;
+  font-weight: 500;
+}
+.message-time {
+  font-size: 11px;
+  margin-left: 8px;
+  opacity: 0.7;
+  color: #999;
+}
+.self-message .message-time {
+  color: white;
+}
+.translation-content {
+  margin-top: 8px;
+  font-size: 14px;
+}
+.self-message .translation-content {
+  color: #e6fffa;
+}
+.other-message .translation-content {
+  color: #4a5568;
+}
+.translation-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.clear-trans-btn {
+  background: none;
+  border: none;
+  font-size: 10px;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
+  margin-top: 2px;
+}
+.divider {
+  height: 1px;
+  background-color: rgba(0, 0, 0, 0.1);
+  margin: 6px 0;
+}
+.self-message .divider {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+.trans-icon {
+  font-size: 12px;
+  margin-right: 4px;
+}
+.translating-spinner {
+  font-size: 12px;
+  margin-top: 4px;
+  opacity: 0.7;
+  font-style: italic;
+}
+.manual-trans-btn {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #42b983;
+  background: none;
+  border: 1px solid #42b983;
+  border-radius: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.ai-loading {
+  font-size: 12px;
+  color: #999;
+  font-style: italic;
+  margin-left: auto;
+}
+.current-user-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: default;
+}
+.logout-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #666;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+.ai-suggestion-box {
+  padding: 10px 16px;
+  background-color: #fffbe6;
+  border-top: 1px solid #fae6b0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  color: #664d03;
+}
+.suggestion-text {
+  flex: 1;
+  margin-right: 20px;
+  word-break: break-word;
+}
+.suggestion-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.apply-btn,
+.cancel-btn {
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+.apply-btn {
+  background-color: #42b983;
+  color: white;
+  border: 1px solid #42b983;
+}
+.cancel-btn {
+  background-color: #ffffff;
+  color: #666;
+  border: 1px solid #ccc;
+}
+.summary-btn,
+.analysis-btn {
+  background-color: #f5f5f5;
+  color: #606266;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: 10px;
+}
+.chat-summary-modal-overlay,
+.analysis-modal-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+.chat-summary-modal,
+.analysis-modal {
+  background-color: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 800px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+}
+.modal-header {
+  padding: 15px 20px;
+  border-bottom: 1px solid #ebeef5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #909399;
+  cursor: pointer;
+  line-height: 1;
+}
+.modal-content {
+  padding: 20px;
+  flex-grow: 1;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #303133;
+}
+.modal-footer {
+  padding: 15px 20px;
+  border-top: 1px solid #ebeef5;
+  text-align: right;
+}
+.copy-btn {
+  background-color: #42b983;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 15px;
+  cursor: pointer;
+}
+.emoji-container {
+  position: relative;
+  align-self: center;
+  flex-shrink: 0;
+  margin-right: -5px;
+}
+.emoji-toggle-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 10px;
+  line-height: 1;
+  color: #606266;
+}
+.emoji-picker-wrapper {
+  position: absolute;
+  bottom: 100%;
+  left: -10px;
+  margin-bottom: 10px;
+  z-index: 20;
+}
+.chat-notification {
+  position: absolute;
+  top: 70px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background-color: #ffffff;
+  padding: 10px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  justify-content: center;
+  border: 1px solid #eee;
+}
+.chat-notification.error {
+  border-left: 4px solid #ff4d4f;
+  color: #d32f2f;
+}
+.chat-notification.info {
+  border-left: 4px solid #42b983;
+  color: #333;
+}
+.slide-fade-enter-active,
+.slide-fade-leave-active,
+.slide-up-enter-active,
+.slide-up-leave-active,
+.modal-fade-enter-active,
+.modal-fade-leave-active,
+.slide-fade-fast-enter-active,
+.slide-fade-fast-leave-active {
+  transition: all 0.3s ease;
+}
+.slide-fade-enter,
+.slide-fade-leave-to {
+  transform: translate(-50%, -20px);
+  opacity: 0;
+}
+.slide-up-enter,
+.slide-up-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
+}
+.modal-fade-enter,
+.modal-fade-leave-to,
+.slide-fade-fast-enter,
+.slide-fade-fast-leave-to {
+  opacity: 0;
+}
+.analysis-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #666;
+}
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #e1e1e1;
+  border-top: 4px solid #1890ff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 15px;
+}
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 20px;
+}
+.dashboard-card {
+  background: white;
+  border-radius: 10px;
+  padding: 15px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+.summary-card {
+  grid-column: 1 / -1;
+  height: auto;
+  min-height: 100px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+.card-title {
+  font-size: 16px;
+  font-weight: bold;
+  margin-bottom: 10px;
+  opacity: 0.9;
+}
+.ai-comment {
+  font-size: 16px;
+  line-height: 1.6;
+  font-weight: 500;
+}
+.chart-container {
+  width: 100%;
+  height: 100%;
+}
+/* 语音气泡 */
+.voice-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  min-width: 80px;
+}
+.voice-duration {
+  font-size: 12px;
+  opacity: 0.8;
+}
 
+/* 麦克风触发按钮 */
+.mic-trigger-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 5px;
+  user-select: none;
+}
+
+/* 录音全屏遮罩 */
+.recording-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+.recording-card {
+  background: white;
+  padding: 30px;
+  border-radius: 20px;
+  text-align: center;
+  width: 160px;
+}
+.status-icon {
+  font-size: 50px;
+  margin-bottom: 10px;
+}
+.status-hint {
+  font-size: 14px;
+  color: #666;
+}
+.status-hint.warning {
+  color: #ff4d4f;
+  font-weight: bold;
+}
+
+.record-zones {
+  display: flex;
+  gap: 40px;
+  margin-top: 50px;
+}
+.zone {
+  padding: 12px 20px;
+  border-radius: 25px;
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  transition: 0.2s;
+}
+.zone.active {
+  transform: scale(1.2);
+  background: #ff4d4f;
+}
+.zone.right.active {
+  background: #1890ff;
+}
+
+/* 呼吸灯效果 */
+.pulse {
+  animation: pulse-anim 1.5s infinite;
+}
+@keyframes pulse-anim {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+/* 语音消息气泡样式 */
+.voice-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 5px 10px;
+  background: #f0f2f5;
+  border-radius: 8px;
+  min-width: 60px;
+  max-width: 200px;
+  user-select: none;
+}
+
+.voice-player:active {
+  background: #e1e4e8;
+}
+
+.voice-duration {
+  font-size: 12px;
+  color: #666;
+}
+
+.voice-icon {
+  font-size: 16px;
+}
 /* 移动端看板适配 */
 @media (max-width: 768px) {
   .dashboard-grid {
