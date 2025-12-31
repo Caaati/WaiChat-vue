@@ -146,16 +146,6 @@
                 </div>
               </div>
 
-              <div
-                v-if="msg.type === 'VOICE'"
-                class="voice-content"
-                @click="playVoice(msg.audioUrl)"
-              >
-                <span class="voice-icon">
-                  {{ isPlaying === msg.audioUrl ? '🔊...' : '🔊' }}
-                </span>
-                <span class="voice-duration">{{ msg.duration || 0 }}"</span>
-              </div>
               <div class="message-content">
                 <template v-if="msg.type === 'TEXT' || !msg.type">
                   {{ msg.content }}
