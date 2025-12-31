@@ -490,7 +490,7 @@ export default {
       const audio = new Audio(url)
       audio.play().catch((err) => {
         console.error('播放失败:', err)
-        this.$message.error('播放失败，请检查文件链接是否有效')
+        this.showNotification('播放失败，请检查文件链接是否有效','error')
       })
     },
     async handleStrangerMessage(senderId, content) {
@@ -1134,12 +1134,7 @@ export default {
         }, 1000);
       } catch (err) {
         console.error("麦克风权限错误:", err);
-        // 【修正】：兼容 Element Plus 的消息提示
-        if (this.$message) {
-          this.$message.error("无法访问麦克风，请检查权限或HTTPS设置");
-        } else {
-          alert("无法访问麦克风，请检查权限或HTTPS设置");
-        }
+        this.showNotification('无法访问麦克风，请检查权限或HTTPS设置', 'error')
       }
     },
 
@@ -1150,7 +1145,7 @@ export default {
         const duration = this.recordDuration;
         if (type === 'send') {
           if (duration < 1) {
-            this.$message.warning('录音时间太短');
+            this.showNotification('录音时间太短', 'warning')
           } else {
             this.uploadAndSendVoice(audioBlob, duration);
           }
@@ -1196,7 +1191,7 @@ export default {
       } catch (error) {
         console.error("麦克风调用失败:", error);
         this.isMobileRecording = false; // 【修正】
-        this.$message.error("无法访问麦克风");
+        this.showNotification('无法访问麦克风', 'error')
       }
     },
     handleTouchMove(e) {
@@ -1247,7 +1242,7 @@ export default {
           } else {
             // 发送语音
             if (finalDuration < 1) {
-              if (this.$message) this.$message.warning('录音时间太短');
+              this.showNotification('录音时间太短', 'warning')
             } else {
               // 【修复点】：确保这里传入的是刚刚获取的 finalDuration
               this.uploadAndSendVoice(audioBlob, finalDuration);
