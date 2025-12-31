@@ -205,7 +205,16 @@
         </transition>
         <div class="ai-toolbar">
           <button
-            class="mic-trigger-btn"
+            v-if="!isMobile"
+            class="mic-trigger-btn pc-mic-btn"
+            @click="startPcRecording"
+            title="点击开始录音"
+          >
+            🎤
+          </button>
+          <button
+            v-else
+            class="mic-trigger-btn mobile-mic-btn"
             @touchstart.prevent="handleTouchStart"
             @touchmove.prevent="handleTouchMove"
             @touchend.prevent="handleTouchEnd"
@@ -316,15 +325,55 @@
       </transition>
     </div>
     <transition name="fade">
-      <div v-if="isRecording" class="recording-overlay">
-        <div class="recording-card">
-          <div v-if="recordStatus === 'cancel'" class="status-icon cancel">🗑️</div>
-          <div v-else-if="recordStatus === 'transcribe'" class="status-icon transcribe">📝</div>
-          <div v-else class="status-icon pulse">🎤</div>
+      <div v-if="isPcRecording" class="pc-recording-overlay">
+        <div class="pc-record-modal">
+          <div class="modal-title">正在录音...</div>
+          <div class="visualizer-container pc-visualizer">
+            <div
+              v-for="(bar, index) in bars"
+              :key="index"
+              class="visualizer-bar"
+              :style="{ height: bar + 'px' }"
+            ></div>
+          </div>
+          <div class="record-timer">{{ recordDuration }}s</div>
+          <div class="pc-record-actions">
+            <button class="action-btn cancel" @click="handlePcAction('cancel')">
+              <span class="icon">🗑️</span> 取消
+            </button>
+            <button class="action-btn transcribe" @click="handlePcAction('transcribe')">
+              <span class="icon">📝</span> 转文字
+            </button>
+            <button class="action-btn send" @click="handlePcAction('send')">
+              <span class="icon">🚀</span> 发送
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <transition name="fade">
+      <div v-if="isMobileRecording" class="recording-overlay">
+        <div
+          class="recording-card"
+          :class="{ pulse: isMobileRecording && !bars.some((b) => b > 10) }"
+        >
+          <div v-if="recordStatus === 'normal'" class="visualizer-container mobile-visualizer">
+            <div
+              v-for="(bar, index) in bars"
+              :key="index"
+              class="visualizer-bar"
+              :style="{ height: bar * 0.6 + 'px' }"
+            ></div>
+          </div>
+          <div v-else class="status-icon">
+            {{ recordStatus === 'cancel' ? '🗑️' : '📝' }}
+          </div>
           <p :class="['status-hint', { warning: recordStatus !== 'normal' }]">{{ statusHint }}</p>
+          <div class="record-timer">{{ recordDuration }}s</div>
         </div>
         <div class="record-zones">
-          <div class="zone left" :class="{ active: recordStatus === 'cancel' }">取消发送</div>
+          <div class="zone left" :class="{ active: recordStatus === 'cancel' }">取消</div>
           <div class="zone right" :class="{ active: recordStatus === 'transcribe' }">转文字</div>
         </div>
       </div>
@@ -353,7 +402,16 @@ export default {
   },
   data() {
     return {
-      isRecording: false,
+      isPcRecording: false, // PC端录音状态
+      isMobileRecording: false, // 手机端录音状态
+      // 音频可视化相关
+      audioContext: null,
+      analyser: null,
+      dataArray: null,
+      animationId: null,
+      bars: Array(20).fill(5), // 初始化20个槽位
+      recordTimer: null,
+
       recordStatus: 'normal', // normal, cancel, transcribe
       startX: 0,
       startY: 0,
@@ -428,12 +486,12 @@ export default {
 
   methods: {
     playAudio(url) {
-      if (!url) return;
-      const audio = new Audio(url);
-      audio.play().catch(err => {
-        console.error("播放失败:", err);
-        this.$message.error("播放失败，请检查文件链接是否有效");
-      });
+      if (!url) return
+      const audio = new Audio(url)
+      audio.play().catch((err) => {
+        console.error('播放失败:', err)
+        this.$message.error('播放失败，请检查文件链接是否有效')
+      })
     },
     async handleStrangerMessage(senderId, content) {
       try {
@@ -517,7 +575,7 @@ export default {
           if (res.data.code === CODES.SUCCESS) {
             const historyData = Array.isArray(res.data.data) ? res.data.data : []
             this.messages = historyData.map((msg) => {
-              const isSelf = msg.userId == this.userId;
+              const isSelf = msg.userId == this.userId
               return {
                 id: msg.id,
                 senderId: isSelf ? this.userId : msg.userId,
@@ -531,7 +589,7 @@ export default {
                 senderName: isSelf ? '我' : contact.nickname,
                 timestamp: msg.createTime, // 后端返回的是 createTime
                 translatedContent: null,
-              };
+              }
             })
             this.scrollToBottom()
           }
@@ -1024,60 +1082,181 @@ export default {
         this.showNotification('发送失败', 'error')
       }
     },
+    // ---------------- 通用：音频可视化核心逻辑 ----------------
+    initVisualizer(stream) {
+      // 兼容性处理
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      this.audioContext = new AudioContext();
+      const source = this.audioContext.createMediaStreamSource(stream);
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 64;
+      source.connect(this.analyser);
+      const bufferLength = this.analyser.frequencyBinCount;
+      this.dataArray = new Uint8Array(bufferLength);
+      this.updateWave();
+    },
+
+    updateWave() {
+      if (!this.isPcRecording && !this.isMobileRecording) return;
+      if (!this.analyser) return;
+      this.analyser.getByteFrequencyData(this.dataArray);
+      for (let i = 0; i < 20; i++) {
+        const val = this.dataArray[i];
+        const height = Math.max(6, (val / 255) * 50);
+        this.bars[i] = height;
+      }
+      this.animationId = requestAnimationFrame(() => this.updateWave());
+    },
+
+    stopVisualizer() {
+      if (this.animationId) cancelAnimationFrame(this.animationId);
+      if (this.audioContext) this.audioContext.close();
+      this.bars = new Array(20).fill(5);
+    },
+
+    // ---------------- PC 端录音逻辑 ----------------
+    async startPcRecording() {
+      if (this.isPcRecording) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.isPcRecording = true;
+        this.recordStartTime = Date.now();
+        this.recordDuration = 0;
+        this.initVisualizer(stream);
+        this.mediaRecorder = new MediaRecorder(stream);
+        this.audioChunks = [];
+        this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data);
+        this.mediaRecorder.start();
+        // 确保计时器变量名统一
+        if (this.recordTimer) clearInterval(this.recordTimer);
+        this.recordTimer = setInterval(() => {
+          this.recordDuration = Math.round((Date.now() - this.recordStartTime) / 1000);
+        }, 1000);
+      } catch (err) {
+        console.error("麦克风权限错误:", err);
+        // 【修正】：兼容 Element Plus 的消息提示
+        if (this.$message) {
+          this.$message.error("无法访问麦克风，请检查权限或HTTPS设置");
+        } else {
+          alert("无法访问麦克风，请检查权限或HTTPS设置");
+        }
+      }
+    },
+
+    handlePcAction(type) {
+      if (!this.mediaRecorder) return;
+      this.mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+        const duration = this.recordDuration;
+        if (type === 'send') {
+          if (duration < 1) {
+            this.$message.warning('录音时间太短');
+          } else {
+            this.uploadAndSendVoice(audioBlob, duration);
+          }
+        } else if (type === 'transcribe') {
+          this.processAudioSTT(audioBlob);
+        }
+        this.audioChunks = [];
+        this.stopVisualizer(); // 这里会清理 bars 和 animationId
+      };
+
+      this.mediaRecorder.stop();
+      this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+
+      // 【修改点】重置状态和计时器
+      this.isPcRecording = false;
+      if (this.recordTimer) {
+        clearInterval(this.recordTimer);
+        this.recordTimer = null;
+      }
+    },
     // --- 录音手势处理 ---
     async handleTouchStart(e) {
-      const touch = e.touches[0]
-      this.startX = touch.clientX
-      this.startY = touch.clientY
-      this.recordStatus = 'normal'
-
+      e.preventDefault();
+      this.isMobileRecording = true;
+      this.recordStatus = 'normal';
+      this.recordStartTime = Date.now();
+      this.recordDuration = 0;
+      // 启动计时器
+      this.timerInterval = setInterval(() => {
+        this.recordDuration = Math.round((Date.now() - this.recordStartTime) / 1000);
+      }, 1000);
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        this.mediaRecorder = new MediaRecorder(stream)
-        this.audioChunks = []
-        this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data)
-        this.mediaRecorder.start()
-        this.isRecording = true
-        this.recordStartTime = Date.now()
-        if (navigator.vibrate) navigator.vibrate(20)
-      } catch (err) {
-        this.showNotification('无法访问麦克风', 'error')
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // 启动波形可视化
+        this.initVisualizer(stream);
+
+        this.mediaRecorder = new MediaRecorder(stream);
+        this.audioChunks = [];
+        this.mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) this.audioChunks.push(e.data);
+        };
+        this.mediaRecorder.start();
+      } catch (error) {
+        console.error("麦克风调用失败:", error);
+        this.isMobileRecording = false; // 【修正】
+        this.$message.error("无法访问麦克风");
       }
     },
     handleTouchMove(e) {
-      if (!this.isRecording) return
-      const touch = e.touches[0]
-      const offsetX = touch.clientX - this.startX
-      const offsetY = touch.clientY - this.startY
+      if (!this.isMobileRecording) return;
+      const touch = e.touches[0];
+      const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
+      // 1. 获取手指相对于屏幕的位置
+      const clientX = touch.clientX;
+      const clientY = touch.clientY;
+      // 2. 设定触发阈值 (手指移动到屏幕中上部即视为触发)
+      // 当手指离开底部输入区（即 Y 坐标小于屏幕高度的 80% 时）开始判断
+      const isUp = clientY < screenHeight * 0.8;
 
-      if (offsetY < -80) {
-        // 向上滑动超过 80px
-        if (offsetX < -40) this.recordStatus = 'cancel'
-        else if (offsetX > 40) this.recordStatus = 'transcribe'
-        else this.recordStatus = 'normal'
+      if (isUp) {
+        if (clientX < screenWidth * 0.4) {
+          // 手指在左侧 40% 区域 -> 取消
+          this.recordStatus = 'cancel';
+        } else if (clientX > screenWidth * 0.6) {
+          // 手指在右侧 40% 区域 -> 转文字
+          this.recordStatus = 'transcribe';
+        } else {
+          // 手指在中间
+          this.recordStatus = 'normal';
+        }
       } else {
-        this.recordStatus = 'normal'
+        // 手指还在底部按钮附近
+        this.recordStatus = 'normal';
       }
     },
     async handleTouchEnd() {
-      if (!this.isRecording) return
-      this.isRecording = false
-      this.mediaRecorder.stop()
-      const duration = Math.round((Date.now() - this.recordStartTime) / 1000)
-
-      this.mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' })
-        if (this.recordStatus === 'cancel') {
-          this.showNotification('已取消')
-        } else if (this.recordStatus === 'transcribe') {
-          this.processAudioSTT(audioBlob)
-        } else {
-          if (duration < 1) {
-            this.showNotification('说话时间太短', 'warning')
-            return
+      if (!this.isMobileRecording) return;
+      // 停止可视化
+      this.stopVisualizer();
+      this.isMobileRecording = false;
+      clearInterval(this.timerInterval);
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+        this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        this.mediaRecorder.onstop = () => {
+          const finalDuration = this.recordDuration;
+          const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+          if (this.recordStatus === 'cancel') {
+            console.log('录音已取消');
+          } else if (this.recordStatus === 'transcribe') {
+            // 传递录音文件进行转文字
+            this.processAudioSTT(audioBlob);
+          } else {
+            // 发送语音
+            if (finalDuration < 1) {
+              if (this.$message) this.$message.warning('录音时间太短');
+            } else {
+              // 【修复点】：确保这里传入的是刚刚获取的 finalDuration
+              this.uploadAndSendVoice(audioBlob, finalDuration);
+            }
           }
-          this.uploadAndSendVoice(audioBlob, duration)
-        }
+          // 重置状态
+          this.audioChunks = [];
+          this.recordDuration = 0; // 发送完后再清空
+        };
       }
     },
     // --- 语音上传与发送 ---
@@ -1089,18 +1268,23 @@ export default {
         const audioUrl = res.data.data
         const voiceMsg = {
           userId: this.userId,
+          senderId: this.userId,
+          senderName: '我',
           targetId: this.selectedContactId,
+          targetName: this.currentContactName,
           content: '[语音消息]',
-          type: 'VOICE',
-          audioUrl: audioUrl,
-          duration: duration,
+          type: 'VOICE', // 接收来自后端的 type 字段
+          audioUrl: audioUrl, // 接收语音地址
+          duration: duration, // 接收时长
+          translatedContent: null,
+          isTranslating: false,
         }
-        console.log('准备通过 WebSocket 发送数据:', voiceMsg)
         this.ws.send(JSON.stringify(voiceMsg))
         this.messages.push(voiceMsg)
         this.scrollToBottom()
       } catch (e) {
         this.showNotification('语音发送失败', 'error')
+        console.log(e)
       }
     },
     async processAudioSTT(blob) {
@@ -2058,24 +2242,43 @@ export default {
   font-weight: bold;
 }
 
+/* 调整手机端录音区域容器 */
 .record-zones {
+  position: absolute;
+  bottom: 150px; /* 提高位置，靠近手指滑动到的地方 */
+  left: 0;
+  right: 0;
   display: flex;
-  gap: 40px;
-  margin-top: 50px;
+  justify-content: space-around; /* 左右分布 */
+  padding: 0 30px;
+  pointer-events: none; /* 防止遮挡触摸事件 */
 }
+
 .zone {
-  padding: 12px 20px;
-  border-radius: 25px;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
   background: rgba(255, 255, 255, 0.2);
   color: white;
-  transition: 0.2s;
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  font-size: 14px;
+  backdrop-filter: blur(5px);
 }
-.zone.active {
-  transform: scale(1.2);
-  background: #ff4d4f;
+
+/* 激活态（手指滑入该区域） */
+.zone.left.active {
+  transform: scale(1.3);
+  background: #ff4d4f; /* 红色：取消 */
+  box-shadow: 0 0 20px rgba(255, 77, 79, 0.5);
 }
+
 .zone.right.active {
-  background: #1890ff;
+  transform: scale(1.3);
+  background: #1890ff; /* 蓝色：转文字 */
+  box-shadow: 0 0 20px rgba(24, 144, 255, 0.5);
 }
 
 /* 呼吸灯效果 */
@@ -2121,6 +2324,148 @@ export default {
 
 .voice-icon {
   font-size: 16px;
+}
+/* ============ 音频波形通用样式 ============ */
+.visualizer-container {
+  display: flex;
+  align-items: center; /* 居中对齐 */
+  justify-content: center;
+  gap: 4px;
+  height: 60px;
+  margin-bottom: 10px;
+}
+
+.visualizer-bar {
+  width: 6px;
+  background-color: #42b983;
+  border-radius: 3px;
+  /* 确保有 transition 效果，看起来更丝滑 */
+  transition: height 0.1s ease;
+  min-height: 6px; /* 基础高度 */
+}
+
+/* 手机端波形微调 */
+.mobile-visualizer {
+  height: 40px; /* 手机端稍微矮一点 */
+}
+.mobile-visualizer .visualizer-bar {
+  width: 4px;
+  background-color: #1890ff; /* 手机端用蓝色区分或保持一致 */
+}
+
+/* ============ PC 端录音弹窗样式 ============ */
+.pc-recording-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pc-record-modal {
+  background: white;
+  width: 400px;
+  padding: 30px;
+  border-radius: 16px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: slide-up-fade 0.3s ease-out;
+}
+
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.record-timer {
+  font-size: 24px;
+  font-family: monospace;
+  color: #42b983;
+  margin: 10px 0 20px 0;
+}
+
+/* PC 操作按钮组 */
+.pc-record-actions {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.action-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: none;
+  border-radius: 12px;
+  background: #f5f7fa;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 14px;
+  color: #606266;
+}
+
+.action-btn .icon {
+  font-size: 24px;
+}
+
+.action-btn:hover {
+  background: #e6e8eb;
+  transform: translateY(-2px);
+}
+
+.action-btn.cancel:hover {
+  background: #fef0f0;
+  color: #f56c6c;
+}
+
+.action-btn.transcribe:hover {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.action-btn.send {
+  background: #e1f3d8; /* 默认浅绿 */
+  color: #67c23a;
+}
+.action-btn.send:hover {
+  background: #42b983;
+  color: white;
+  box-shadow: 0 4px 12px rgba(66, 185, 131, 0.3);
+}
+
+/* ============ 手机端样式兼容 ============ */
+.recording-card {
+  /* 确保手机端卡片能容纳波形 */
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 /* 移动端看板适配 */
 @media (max-width: 768px) {
