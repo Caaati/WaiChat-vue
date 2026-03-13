@@ -124,7 +124,6 @@
 
       <div class="chat-messages">
         <div v-if="messages.length === 0 && selectedContactId" class="empty-chat-hint">
-          <p>这里是空的，发送一条消息开始对话吧！</p>
         </div>
         <div v-else-if="!selectedContactId" class="empty-chat-hint">
           <p v-if="!isMobile">请点击左侧折叠按钮或选择一个联系人。</p>
@@ -158,6 +157,31 @@
                     <audio :src="msg.audioUrl" ref="audioPlayer"></audio>
                   </div>
                 </template>
+
+                <button
+                  v-if="msg.type === 'VOICE' && !msg.textContent && !msg.isTranscribing"
+                  class="voice-to-text-btn"
+                  @click="convertVoiceToText(msg)"
+                >
+                  转文字
+                </button>
+                <!-- 转文字加载中状态 -->
+                <div v-if="msg.isTranscribing" class="transcribing-spinner">转文字中...</div>
+                <!-- 转文字结果展示 -->
+                <div v-if="msg.textContent" class="voice-text-content">
+                  <div class="divider"></div>
+                  <div class="voice-text-line">
+                    📝 {{ msg.textContent }}
+                    <button
+                      class="clear-text-btn"
+                      @click.stop="clearVoiceText(msg)"
+                      title="清除文字"
+                    >
+                      ❌
+                    </button>
+                  </div>
+                </div>
+
               </div>
 
               <div v-if="msg.translatedContent" class="translation-content">
@@ -485,6 +509,39 @@ export default {
   },
 
   methods: {
+    // 语音转文字
+    async convertVoiceToText(msg) {
+      if (!msg.audioUrl) {
+        this.showNotification('音频链接为空', 'error');
+        return;
+      }
+      // 标记转文字中
+      msg.isTranscribing = true;
+      try {
+        const response = await axios.post('/api/ai/voiceToText', {
+          audioUrl: msg.audioUrl, // 音频文件URL
+        });
+        if (response.data.code === CODES.SUCCESS && response.data.data) {
+          msg.textContent = response.data.data.text; // 保存转文字结果
+          this.showNotification('语音转文字成功');
+        } else {
+          this.showNotification(response.data.msg || '语音转文字失败', 'error');
+        }
+      } catch (error) {
+        console.error('语音转文字失败:', error);
+        this.showNotification('语音转文字服务异常', 'error');
+      } finally {
+        // 取消加载状态
+        msg.isTranscribing = false;
+      }
+    },
+    // 清除语音转文字结果
+    clearVoiceText(msg) {
+      if (msg) {
+        msg.textContent = null;
+        this.$forceUpdate();
+      }
+    },
     playAudio(url) {
       if (!url) return
       const audio = new Audio(url)
@@ -1374,6 +1431,8 @@ export default {
             timestamp: data.createTime || new Date(),
             translatedContent: null,
             isTranslating: false,
+            textContent: null, // 语音转文字结果
+            isTranscribing: false, // 转文字加载状态
           }
           if (this.selectedContactId != senderId) {
             this.unreadCounts[senderId] = (this.unreadCounts[senderId] || 0) + 1
@@ -2452,6 +2511,39 @@ export default {
   background: #42b983;
   color: white;
   box-shadow: 0 4px 12px rgba(66, 185, 131, 0.3);
+}
+
+.voice-to-text-btn {
+  margin-top: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #188df0;
+  border: 1px solid #188df0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.voice-to-text-btn:hover {
+  background: #f0f8ff;
+}
+.voice-text-content {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.voice-text-line {
+  font-size: 14px;
+  color: #333;
+}
+.clear-text-btn {
+  margin-left: 8px;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #999;
+}
+.clear-text-btn:hover {
+  color: #ff4444;
 }
 
 /* ============ 手机端样式兼容 ============ */
